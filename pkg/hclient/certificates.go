@@ -1,4 +1,4 @@
-package gobundledhttp
+package hclient
 
 // PemCerts is the default pool of certificates from the Mozilla certificate
 // collection. This collection is also used by cURL as indicated here:

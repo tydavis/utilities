@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,18 +9,71 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
+
+	"github.com/karrick/godirwalk"
 )
 
 var verbose bool
 
-type repo struct {
-	path    string
-	remotes map[string]string
+// Repo provides the file Path and corresponding git Remotes for each repository
+type Repo struct {
+	Path    string            `json:"path"`
+	Remotes map[string]string `json:"remotes"`
+}
+
+// Repolist wraps the slice of repos for JSON serialization
+type Repolist struct {
+	Repos []Repo `json:"repos"`
+}
+
+func (a Repolist) Len() int           { return len(a.Repos) }
+func (a Repolist) Less(i, j int) bool { return a.Repos[i].Path < a.Repos[j].Path }
+func (a Repolist) Swap(i, j int)      { a.Repos[i], a.Repos[j] = a.Repos[j], a.Repos[i] }
+
+// getRemotes iterates through a repolist to add remotes to all identified repos
+func (a *Repolist) getRemotes(gp, h string) {
+	for i, r := range a.Repos {
+		a.Repos[i].Remotes = make(map[string]string, 3) // Prebuild map to avoid nil assignment
+
+		wd := filepath.Join(h, r.Path)
+		err := os.Chdir(wd)
+		if err != nil {
+			fmt.Printf("error: failed to chdir: %s : %v\n", wd, err)
+			os.Chdir(h) //nolint:errcheck
+			continue
+		}
+
+		// Gather current list of remotes to compare to map
+		cmd := exec.Command(gp, "remote")
+		re, cerr := cmd.CombinedOutput()
+		if cerr != nil {
+			fmt.Printf("failed to gather remotes for: %s :: %v\n", r.Path, cerr)
+			break
+		}
+
+		local := strings.Split(string(re), "\n")
+		// Check existing remotes match our info
+		for _, v := range local {
+			if v == "" {
+				continue
+			}
+			gc := exec.Command(gp, "config", "--get", fmt.Sprintf("remote.%s.url", v))
+			resp, e := gc.CombinedOutput()
+			if e != nil {
+				fmt.Printf("failed to get remote url: %s, %v\n", v, e)
+				continue
+			}
+			rem := strings.Split(string(resp), "\n")[0]
+			a.Repos[i].Remotes[v] = string(rem)
+
+		}
+		os.Chdir(h) //nolint:errcheck
+	}
 }
 
 func main() {
+	update := flag.Bool("u", false, "Update gitlist")
 	confpath := flag.String("c", "~/.setup/gitlist", "Config file containing all git repos and remotes")
 	workDir := flag.String("d", "~/code", "Root directory to perform clones and updates")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
@@ -39,48 +92,96 @@ func main() {
 		os.Exit(1)
 	}
 
-	// load config
-	gl, err := loadConf(*confpath)
+	cpath, err := parsePath(*confpath)
 	if err != nil {
-		fmt.Printf("conf file error: %v \n", err)
+		fmt.Printf("unable to parse config path: %v", err)
 		os.Exit(1)
 	}
-	if verbose {
-		fmt.Printf("config data: \n %+v \n", gl)
-	}
 
-	// Walk the list of repos in gitlist
-	for i := range gl {
-		wd := filepath.Join(h, gl[i].path)
-		if stat, err := os.Stat(wd); err != nil || !stat.IsDir() { // Repo not found
-			err := cloneRepo(gitpath, h, gl[i])
+	if *update {
+		// Do updates
+		rlist, err := visit(h)
+		if err != nil {
+			fmt.Printf("failed to update code: %v\n", err)
+			os.Exit(1)
+		}
+		r := Repolist{Repos: rlist}
+		r.getRemotes(gitpath, h)
+
+		if _, err := os.Stat(cpath); err == nil { // The file exists, but we want to overwrite it
+			err := os.Remove(cpath)
 			if err != nil {
-				fmt.Printf("failed to clone repository at path: %s :: %v\n", gl[i].path, err)
-				continue
+				fmt.Printf("failed to delete config file: %v", err)
+				os.Exit(1)
 			}
-			err = updateRemotes(gitpath, h, gl[i])
-			if err != nil {
-				fmt.Printf("failed to add remotes to new clone: %v\n", err)
-				continue
-			}
-		} else {
-			err := updateRemotes(gitpath, h, gl[i])
-			if err != nil {
-				fmt.Printf("failed to update remotes: %v\n", err)
-				continue
+		}
+		jf, err := os.Create(cpath)
+		if err != nil {
+			fmt.Printf("unable to open file %s :: %v", *confpath, err)
+			os.Exit(1)
+		}
+		defer jf.Close() //nolint:errcheck
+
+		b, err := json.MarshalIndent(r, "", "  ")
+		if err != nil {
+			fmt.Printf("json encoding error: %v", err)
+			os.Exit(1)
+		}
+		if _, err := jf.Write(b); err != nil {
+			fmt.Printf("file write error: %v", err)
+			os.Exit(1)
+		}
+
+		// Maybe switch to streaming once files get large?
+		//enc := json.NewEncoder(jf)
+		//if err := enc.Encode(&r); err != nil {
+		//	fmt.Printf("json encoding error: %v", err)
+		//	os.Exit(1)
+		//}
+	} else {
+		// load config
+		gl, err := loadConf(*confpath)
+		if err != nil {
+			fmt.Printf("conf file error: %v \n", err)
+			os.Exit(1)
+		}
+		if verbose {
+			fmt.Printf("config data: \n %+v \n", gl)
+		}
+
+		// Walk the list of repos in gitlist
+		for i := range gl.Repos {
+			wd := filepath.Join(h, gl.Repos[i].Path)
+			if stat, err := os.Stat(wd); err != nil || !stat.IsDir() { // Repo not found
+				err := cloneRepo(gitpath, h, gl.Repos[i])
+				if err != nil {
+					fmt.Printf("failed to clone repository at path: %s :: %v\n", gl.Repos[i].Path, err)
+					continue
+				}
+				err = updateRemotes(gitpath, h, gl.Repos[i])
+				if err != nil {
+					fmt.Printf("failed to add remotes to new clone: %v\n", err)
+					continue
+				}
+			} else {
+				err := updateRemotes(gitpath, h, gl.Repos[i])
+				if err != nil {
+					fmt.Printf("failed to update remotes: %v\n", err)
+					continue
+				}
 			}
 		}
 	}
 }
 
-func cloneRepo(gp, h string, r repo) error {
-	cmd := exec.Command(gp, "clone", r.remotes["origin"], filepath.Join(h, r.path))
+func cloneRepo(gp, h string, r Repo) error {
+	cmd := exec.Command(gp, "clone", r.Remotes["origin"], filepath.Join(h, r.Path))
 	_, cerr := cmd.CombinedOutput()
 	return cerr
 }
 
-func updateRemotes(gp, h string, r repo) error {
-	wd := filepath.Join(h, r.path)
+func updateRemotes(gp, h string, r Repo) error {
+	wd := filepath.Join(h, r.Path)
 	err := os.Chdir(wd)
 	if err != nil {
 		fmt.Printf("failed to chdir: %s : %v\n", wd, err)
@@ -97,7 +198,7 @@ func updateRemotes(gp, h string, r repo) error {
 
 	local := strings.Split(string(res), "\n")
 	// Add any remotes that don't already exist
-	for k, v := range r.remotes {
+	for k, v := range r.Remotes {
 		if contains(local, k) {
 			continue
 		}
@@ -114,14 +215,13 @@ func updateRemotes(gp, h string, r repo) error {
 		if v == "" {
 			continue
 		}
-
 		gc := exec.Command(gp, "config", "--get", fmt.Sprintf("remote.%s.url", v))
 		resp, e := gc.CombinedOutput()
 		if e != nil {
 			fmt.Printf("failed to get remote url: %s, %v\n", v, e)
 			continue
 		}
-		m, ok := r.remotes[v]
+		m, ok := r.Remotes[v]
 		if !ok {
 			if verbose {
 				fmt.Printf("new remote found: %s=%s @ %s\n", v, resp, wd)
@@ -145,47 +245,31 @@ func updateRemotes(gp, h string, r repo) error {
 	return nil
 }
 
-type repolist []repo
-
-func (a repolist) Len() int           { return len(a) }
-func (a repolist) Less(i, j int) bool { return a[i].path < a[j].path }
-func (a repolist) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-
 // loadConf loads and parses the configuration file as passed in,
 // returning the gitlist struct and any errors
-func loadConf(cpath string) ([]repo, error) {
+func loadConf(cpath string) (Repolist, error) {
+	var r Repolist
 	fp, e := parsePath(cpath)
 	if e != nil {
-		return []repo{}, e
+		return r, e
 	}
 
 	_, err := os.Stat(fp)
 	if os.IsNotExist(err) {
-		return []repo{}, err
+		return r, err
 	}
 
 	f, e := os.Open(fp)
 	if e != nil {
-		return []repo{}, e
+		return r, e
 	}
-	defer f.Close()
-
-	list := make([]repo, 0, 100) // prealloc capacity for 100 repos
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		cline := strings.Split(scanner.Text(), ",")
-		r := repo{
-			path: cline[0],
-		}
-		r.remotes = make(map[string]string)
-		for _, l := range cline[1:] {
-			sp := strings.Split(l, "=")
-			r.remotes[sp[0]] = sp[1]
-		}
-		list = append(list, r)
+	defer f.Close() //nolint:errcheck
+	dec := json.NewDecoder(f)
+	if err := dec.Decode(&r); err != nil {
+		fmt.Printf("failure to decode config file: %v", err)
+		return r, err
 	}
-	sort.Sort(repolist(list)) // Return sorted
-	return list, scanner.Err()
+	return r, nil
 }
 
 // parsePath ensures normalization of file paths,
@@ -197,7 +281,7 @@ func parsePath(cpath string) (fullpath string, err error) {
 		if err != nil {
 			return
 		}
-		fullpath = path.Clean(strings.ReplaceAll(cpath, "~", d))
+		fullpath = path.Clean(strings.Replace(cpath, "~", d, 1))
 		return
 	}
 	fullpath = path.Clean(cpath)
@@ -215,19 +299,10 @@ func contains(s []string, e string) bool {
 
 func buildchdir(workdir string) (fullpath string, err error) {
 	var h string
-	if workdir == "" { // Someone intentionally passes an empty string
-		h, err = os.UserHomeDir()
-		if err != nil {
-			fmt.Printf("could not find home directory for user: %s\n", workdir)
-			os.Exit(1)
-		}
-		fullpath = filepath.Join(h, "code") // Our default
-	} else {
-		h, err = parsePath(workdir)
-		if err != nil {
-			fmt.Printf("could not parse declared directory: %s\n", workdir)
-			return
-		}
+	h, err = parsePath(workdir)
+	if err != nil {
+		fmt.Printf("could not parse declared directory: %s\n", workdir)
+		return
 	}
 	fullpath = h
 
@@ -251,4 +326,25 @@ func buildchdir(workdir string) (fullpath string, err error) {
 		return
 	}
 	return
+}
+
+// visit is a custom function which allows all Repos to be walked across the filesystem
+func visit(p string) ([]Repo, error) {
+	a := make([]Repo, 0, 100)
+	err := godirwalk.Walk(p, &godirwalk.Options{
+		Callback: func(osPathname string, de *godirwalk.Dirent) error {
+			if strings.HasSuffix(osPathname, "/.git") {
+				path := strings.TrimRight(strings.TrimPrefix(osPathname, (p+string(os.PathSeparator))), ".git")
+				for _, f := range a {
+					if strings.HasPrefix(path, f.Path) { // Detect if found path exists in currently scanned path
+						return godirwalk.SkipThis
+					}
+				}
+				a = append(a, Repo{Path: path})
+			}
+			return nil
+		},
+		Unsorted: false, // Setting this to true causes many problems in scanning
+	})
+	return a, err
 }

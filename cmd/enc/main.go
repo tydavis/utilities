@@ -92,7 +92,9 @@ func main() {
 // readPassword reads password without echoing to the terminal
 func readPassword() string {
 	fmt.Print("enter passphrase: ")
-	bytePassword, err := terminal.ReadPassword(syscall.Stdin)
+	var bytePassword []byte
+	var err error
+	bytePassword, err = terminal.ReadPassword(int(syscall.Stdin))
 	if err != nil {
 		log.Fatalf("Cannot read passphrase from terminal :: %v", err)
 	}

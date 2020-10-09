@@ -1,7 +1,10 @@
-# golang.org/x/crypto v0.0.0-20200728195943-123391ffb6de
+# github.com/karrick/godirwalk v1.16.1
+## explicit
+github.com/karrick/godirwalk
+# golang.org/x/crypto v0.0.0-20201002170205-7f63de1d35b0
 ## explicit
 golang.org/x/crypto/ssh/terminal
-# golang.org/x/sys v0.0.0-20200819171115-d785dc25833f
+# golang.org/x/sys v0.0.0-20201009025420-dfb3f7c4e634
 ## explicit
 golang.org/x/sys/internal/unsafeheader
 golang.org/x/sys/unix

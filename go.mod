@@ -1,8 +1,9 @@
 module github.com/tydavis/utilities
 
-go 1.14
+go 1.15
 
 require (
-	golang.org/x/crypto v0.0.0-20200728195943-123391ffb6de
-	golang.org/x/sys v0.0.0-20200819171115-d785dc25833f // indirect
+	github.com/karrick/godirwalk v1.16.1
+	golang.org/x/crypto v0.0.0-20201002170205-7f63de1d35b0
+	golang.org/x/sys v0.0.0-20201009025420-dfb3f7c4e634 // indirect
 )

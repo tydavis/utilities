@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -12,6 +13,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 	"syscall"
 
 	"golang.org/x/crypto/ssh/terminal"
@@ -30,7 +32,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	passphrase = readPassword()
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		log.Fatalf("failed to get os.Stdin: %v\n", err)
+	}
+	if fi.Mode()&os.ModeNamedPipe == 0 {
+		passphrase = readPassword()
+	} else {
+		reader := bufio.NewReader(os.Stdin)
+		var output []rune
+
+		for {
+			input, _, err := reader.ReadRune()
+			if err != nil && err == io.EOF {
+				break
+			}
+			output = append(output, input)
+		}
+		passphrase = strings.TrimSuffix(string(output), "\n") // Naive conversion to string, trim newlines
+
+	}
 
 	hasher := sha256.New()
 	hasher.Write([]byte(passphrase))

@@ -13,6 +13,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 	"syscall"
 
 	"golang.org/x/crypto/ssh/terminal"
@@ -69,15 +70,22 @@ func main() {
 			log.Fatalf("failure to decrypt: %v\n", err)
 		}
 
-		if outfile != "" {
-			e := ioutil.WriteFile(outfile, plaintext, 0644)
-			if e != nil {
-				log.Fatalf("unable to write file: %v\n", e)
-			}
-		}
 		if visual {
 			// Write to stdout
 			fmt.Fprintf(os.Stdout, "%s\n", plaintext)
+		} else {
+			var of string
+			if outfile == "" {
+				// Default name is `filename` without the ".enc" suffix
+				of = strings.TrimSuffix(filename, ".enc")
+				if strings.EqualFold(of, filename) {
+					of = filename + ".dec" // "Decoded" file format
+				}
+			}
+			e := ioutil.WriteFile(of, plaintext, 0644)
+			if e != nil {
+				log.Fatalf("unable to write file: %v\n", e)
+			}
 		}
 
 	} else {

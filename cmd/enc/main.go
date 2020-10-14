@@ -79,18 +79,17 @@ func main() {
 		log.Fatalf("failure to read file at %s :: %v\n", filename, e)
 	}
 
-	var f []byte
-	if pem {
-		var e error
-		f, e = base64.URLEncoding.DecodeString(string(rf))
-		if e != nil {
-			log.Fatalf("unable to base64-decode file %s : %v \n", filename, e)
-		}
-	} else {
-		f = rf
-	}
-
 	if decrypt {
+		var f []byte
+		if pem {
+			var e error
+			f, e = base64.URLEncoding.DecodeString(string(rf))
+			if e != nil {
+				log.Fatalf("unable to base64-decode file %s : %v \n", filename, e)
+			}
+		} else {
+			f = rf
+		}
 		nonceSize := gcm.NonceSize()
 		if len(f) < nonceSize {
 			log.Fatalf("file smaller than nonceSize, breaking AES: %v\n", err)
@@ -114,15 +113,20 @@ func main() {
 		}
 
 	} else {
+		var f []byte
+		f = rf // We're encoding so read the raw file
+
 		nonce := make([]byte, gcm.NonceSize())
 		if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
 			log.Fatalf("unable to read random source: %v \n", err)
 		}
 
 		b := gcm.Seal(nonce, nonce, f, nil)
+		format := "%s.enc"
 
 		var fw []byte
 		if pem { //Base64
+			format = "%s.b64.enc"
 			p := base64.URLEncoding.EncodeToString(b)
 			if visual {
 				fmt.Fprintf(os.Stdout, "%s\n", p)
@@ -134,7 +138,7 @@ func main() {
 			fw = b[:]
 		}
 
-		err = ioutil.WriteFile(fmt.Sprintf("%s.enc", filename), fw, 0644)
+		err = ioutil.WriteFile(fmt.Sprintf(format, filename), fw, 0644)
 		if err != nil {
 			log.Fatalf("unable to write encrypted file %s.enc :: %v \n", filename, err)
 		}

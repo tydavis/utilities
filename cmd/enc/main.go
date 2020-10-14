@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
@@ -20,11 +21,13 @@ import (
 )
 
 func main() {
-	var decrypt bool
+	var decrypt, pem, visual bool
 	var filename, outfile, passphrase string
+	flag.BoolVar(&pem, "b", false, "Use base64 encoding for input/output")
 	flag.BoolVar(&decrypt, "d", false, "Decrypt file, default: encrypt")
 	flag.StringVar(&filename, "f", "", "File path")
 	flag.StringVar(&outfile, "o", "", "Override the file output path")
+	flag.BoolVar(&visual, "v", false, "Print output to stdout")
 	flag.Parse()
 
 	if filename == "" {
@@ -71,9 +74,20 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	f, e := ioutil.ReadFile(filename)
+	rf, e := ioutil.ReadFile(filename)
 	if e != nil {
 		log.Fatalf("failure to read file at %s :: %v\n", filename, e)
+	}
+
+	var f []byte
+	if pem {
+		var e error
+		f, e = base64.URLEncoding.DecodeString(string(rf))
+		if e != nil {
+			log.Fatalf("unable to base64-decode file %s : %v \n", filename, e)
+		}
+	} else {
+		f = rf
 	}
 
 	if decrypt {
@@ -89,11 +103,12 @@ func main() {
 		}
 
 		if outfile != "" {
-			e := ioutil.WriteFile(outfile, plaintext, 0755)
+			e := ioutil.WriteFile(outfile, plaintext, 0644)
 			if e != nil {
 				log.Fatalf("unable to write file: %v\n", e)
 			}
-		} else {
+		}
+		if visual {
 			// Write to stdout
 			fmt.Fprintf(os.Stdout, "%s\n", plaintext)
 		}
@@ -101,11 +116,27 @@ func main() {
 	} else {
 		nonce := make([]byte, gcm.NonceSize())
 		if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
-			log.Fatalln(err)
+			log.Fatalf("unable to read random source: %v \n", err)
 		}
-		err = ioutil.WriteFile(fmt.Sprintf("%s.enc", filename), gcm.Seal(nonce, nonce, f, nil), 0777)
+
+		b := gcm.Seal(nonce, nonce, f, nil)
+
+		var fw []byte
+		if pem { //Base64
+			p := base64.URLEncoding.EncodeToString(b)
+			if visual {
+				fmt.Fprintf(os.Stdout, "%s\n", p)
+				os.Exit(0)
+			} else {
+				fw = []byte(p)
+			}
+		} else {
+			fw = b[:]
+		}
+
+		err = ioutil.WriteFile(fmt.Sprintf("%s.enc", filename), fw, 0644)
 		if err != nil {
-			log.Fatalln(err)
+			log.Fatalf("unable to write encrypted file %s.enc :: %v \n", filename, err)
 		}
 	}
 }

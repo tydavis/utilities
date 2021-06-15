@@ -14,7 +14,10 @@ import (
 	"github.com/karrick/godirwalk"
 )
 
-var verbose bool
+var (
+	verbose bool
+	debug   bool
+)
 
 // Repo provides the file Path and corresponding git Remotes for each repository
 type Repo struct {
@@ -31,52 +34,12 @@ func (a Repolist) Len() int           { return len(a.Repos) }
 func (a Repolist) Less(i, j int) bool { return a.Repos[i].Path < a.Repos[j].Path }
 func (a Repolist) Swap(i, j int)      { a.Repos[i], a.Repos[j] = a.Repos[j], a.Repos[i] }
 
-// getRemotes iterates through a repolist to add remotes to all identified repos
-func (a *Repolist) getRemotes(gp, h string) {
-	for i, r := range a.Repos {
-		a.Repos[i].Remotes = make(map[string]string, 3) // Prebuild map to avoid nil assignment
-
-		wd := filepath.Join(h, r.Path)
-		err := os.Chdir(wd)
-		if err != nil {
-			fmt.Printf("error: failed to chdir: %s : %v\n", wd, err)
-			os.Chdir(h) //nolint:errcheck
-			continue
-		}
-
-		// Gather current list of remotes to compare to map
-		cmd := exec.Command(gp, "remote")
-		re, cerr := cmd.CombinedOutput()
-		if cerr != nil {
-			fmt.Printf("failed to gather remotes for: %s :: %v\n", r.Path, cerr)
-			break
-		}
-
-		local := strings.Split(string(re), "\n")
-		// Check existing remotes match our info
-		for _, v := range local {
-			if v == "" {
-				continue
-			}
-			gc := exec.Command(gp, "config", "--get", fmt.Sprintf("remote.%s.url", v))
-			resp, e := gc.CombinedOutput()
-			if e != nil {
-				fmt.Printf("failed to get remote url: %s, %v\n", v, e)
-				continue
-			}
-			rem := strings.Split(string(resp), "\n")[0]
-			a.Repos[i].Remotes[v] = string(rem)
-
-		}
-		os.Chdir(h) //nolint:errcheck
-	}
-}
-
 func main() {
 	update := flag.Bool("u", false, "Update gitlist")
 	confpath := flag.String("c", "~/.setup/gitlist", "Config file containing all git repos and remotes")
 	workDir := flag.String("d", "~/code", "Root directory to perform clones and updates")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
+	flag.BoolVar(&debug, "debug", false, "debug-level output")
 	flag.Parse()
 
 	h, e := buildchdir(*workDir)
@@ -145,7 +108,7 @@ func main() {
 			fmt.Printf("conf file error: %v \n", err)
 			os.Exit(1)
 		}
-		if verbose {
+		if debug {
 			fmt.Printf("config data: \n %+v \n", gl)
 		}
 
@@ -153,6 +116,9 @@ func main() {
 		for i := range gl.Repos {
 			wd := filepath.Join(h, gl.Repos[i].Path)
 			if stat, err := os.Stat(wd); err != nil || !stat.IsDir() { // Repo not found
+				if verbose {
+					fmt.Printf("cloning repo: %s\n", gl.Repos[i].Path)
+				}
 				err := cloneRepo(gitpath, h, gl.Repos[i])
 				if err != nil {
 					fmt.Printf("failed to clone repository at path: %s :: %v\n", gl.Repos[i].Path, err)
@@ -164,6 +130,9 @@ func main() {
 					continue
 				}
 			} else {
+				if verbose {
+					fmt.Printf("updating remotes for: %s\n", gl.Repos[i].Path)
+				}
 				err := updateRemotes(gitpath, h, gl.Repos[i])
 				if err != nil {
 					fmt.Printf("failed to update remotes: %v\n", err)
@@ -243,6 +212,47 @@ func updateRemotes(gp, h string, r Repo) error {
 	}
 
 	return nil
+}
+
+// getRemotes iterates through a repolist to add remotes to all identified repos
+func (a *Repolist) getRemotes(gp, h string) {
+	for i, r := range a.Repos {
+		a.Repos[i].Remotes = make(map[string]string, 3) // Prebuild map to avoid nil assignment
+
+		wd := filepath.Join(h, r.Path)
+		err := os.Chdir(wd)
+		if err != nil {
+			fmt.Printf("error: failed to chdir: %s : %v\n", wd, err)
+			os.Chdir(h) //nolint:errcheck
+			continue
+		}
+
+		// Gather current list of remotes to compare to map
+		cmd := exec.Command(gp, "remote")
+		re, cerr := cmd.CombinedOutput()
+		if cerr != nil {
+			fmt.Printf("failed to gather remotes for: %s :: %v\n", r.Path, cerr)
+			break
+		}
+
+		local := strings.Split(string(re), "\n")
+		// Check existing remotes match our info
+		for _, v := range local {
+			if v == "" {
+				continue
+			}
+			gc := exec.Command(gp, "config", "--get", fmt.Sprintf("remote.%s.url", v))
+			resp, e := gc.CombinedOutput()
+			if e != nil {
+				fmt.Printf("failed to get remote url: %s, %v\n", v, e)
+				continue
+			}
+			rem := strings.Split(string(resp), "\n")[0]
+			a.Repos[i].Remotes[v] = string(rem)
+
+		}
+		os.Chdir(h) //nolint:errcheck
+	}
 }
 
 // loadConf loads and parses the configuration file as passed in,
